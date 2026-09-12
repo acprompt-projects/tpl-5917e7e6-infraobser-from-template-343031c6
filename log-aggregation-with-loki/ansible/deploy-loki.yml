@@ -1,0 +1,202 @@
+---
+- name: Deploy Loki and Promtail for log aggregation
+  hosts: loki_servers
+  become: true
+  vars:
+    loki_version: "2.9.4"
+    promtail_version: "2.9.4"
+    loki_data_dir: /var/lib/loki
+    loki_config_dir: /etc/loki
+    promtail_config_dir: /etc/promtail
+    loki_http_port: 3100
+    loki_grpc_port: 9095
+
+  tasks:
+    - name: Install dependencies
+      apt:
+        name: ["unzip", "curl", "adduser", "libfontconfig1"]
+        update_cache: true
+
+    - name: Create loki user
+      user:
+        name: loki
+        system: true
+        shell: /usr/sbin/nologin
+        create_home: false
+
+    - name: Create directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: loki
+        group: loki
+        mode: "0755"
+      loop: ["{{ loki_data_dir }}", "{{ loki_data_dir }}/chunks", "{{ loki_data_dir }}/index", "{{ loki_config_dir }}", "{{ promtail_config_dir }}"]
+
+    - name: Download Loki binary
+      unarchive:
+        src: "https://github.com/grafana/loki/releases/download/v{{ loki_version }}/loki-linux-amd64.zip"
+        dest: /usr/local/bin
+        remote_src: true
+      register: loki_download
+      until: loki_download is succeeded
+      retries: 3
+
+    - name: Set Loki binary permissions
+      file:
+        path: /usr/local/bin/loki-linux-amd64
+        mode: "0755"
+
+    - name: Deploy Loki configuration
+      copy:
+        dest: "{{ loki_config_dir }}/loki-config.yaml"
+        owner: loki
+        group: loki
+        mode: "0644"
+        content: |
+          auth_enabled: false
+          server:
+            http_listen_port: {{ loki_http_port }}
+            grpc_listen_port: {{ loki_grpc_port }}
+          common:
+            path_prefix: {{ loki_data_dir }}
+            storage:
+              filesystem:
+                chunks_directory: {{ loki_data_dir }}/chunks
+                rules_directory: {{ loki_data_dir }}/rules
+            replication_factor: 1
+          schema_config:
+            configs:
+              - from: 2020-10-24
+                store: tsdb
+                object_store: filesystem
+                schema: v13
+                index:
+                  prefix: index_
+                  period: 24h
+          limits_config:
+            retention_period: 168h
+            max_query_length: 721h
+          compactor:
+            working_directory: {{ loki_data_dir }}/compactor
+            compaction_interval: 10m
+            retention_enabled: true
+            retention_delete_delay: 2h
+            retention_delete_worker_count: 150
+
+    - name: Deploy Loki systemd service
+      copy:
+        dest: /etc/systemd/system/loki.service
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Loki Log Aggregation
+          After=network.target
+          [Service]
+          User=loki
+          Group=loki
+          ExecStart=/usr/local/bin/loki-linux-amd64 -config.file={{ loki_config_dir }}/loki-config.yaml
+          Restart=always
+          RestartSec=5
+          LimitNOFILE=65536
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Enable and start Loki
+      systemd:
+        name: loki
+        daemon_reload: true
+        enabled: true
+        state: started
+
+    - name: Download Promtail binary
+      unarchive:
+        src: "https://github.com/grafana/loki/releases/download/v{{ promtail_version }}/promtail-linux-amd64.zip"
+        dest: /usr/local/bin
+        remote_src: true
+      register: promtail_download
+      until: promtail_download is succeeded
+      retries: 3
+
+    - name: Set Promtail binary permissions
+      file:
+        path: /usr/local/bin/promtail-linux-amd64
+        mode: "0755"
+
+    - name: Deploy Promtail configuration
+      copy:
+        dest: "{{ promtail_config_dir }}/promtail-config.yaml"
+        mode: "0644"
+        content: |
+          server:
+            http_listen_port: 9097
+            grpc_listen_port: 0
+          positions:
+            filename: /tmp/positions.yaml
+          clients:
+            - url: http://127.0.0.1:{{ loki_http_port }}/loki/api/v1/push
+          scrape_configs:
+            - job_name: journal
+              journal:
+                max_age: 12h
+                labels:
+                  job: systemd-journal
+              relabel_configs:
+                - source_labels: ["__journal__systemd_unit"]
+                  target_label: unit
+            - job_name: varlogs
+              static_configs:
+                - targets: [localhost]
+                  labels:
+                    job: varlogs
+                    __path__: /var/log/*log
+            - job_name: applogs
+              static_configs:
+                - targets: [localhost]
+                  labels:
+                    job: app
+                    __path__: /var/log/app/*.log
+
+    - name: Create app log directory
+      file:
+        path: /var/log/app
+        state: directory
+        mode: "0755"
+
+    - name: Deploy Promtail systemd service
+      copy:
+        dest: /etc/systemd/system/promtail.service
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Promtail Log Shipper
+          After=network.target loki.service
+          [Service]
+          ExecStart=/usr/local/bin/promtail-linux-amd64 -config.file={{ promtail_config_dir }}/promtail-config.yaml
+          Restart=always
+          RestartSec=5
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Enable and start Promtail
+      systemd:
+        name: promtail
+        daemon_reload: true
+        enabled: true
+        state: started
+
+    - name: Wait for Loki to become ready
+      uri:
+        url: "http://127.0.0.1:{{ loki_http_port }}/ready"
+        status_code: [200]
+      register: loki_ready
+      until: loki_ready is succeeded
+      retries: 12
+      delay: 5
+
+    - name: Verify Loki is running
+      uri:
+        url: "http://127.0.0.1:{{ loki_http_port }}/metrics"
+        return_content: true
+      register: loki_metrics
+      failed_when: "'loki_' not in loki_metrics.content"
