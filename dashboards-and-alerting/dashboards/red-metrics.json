@@ -1,0 +1,76 @@
+{
+  "dashboard": {
+    "title": "RED Metrics - Request Rate / Errors / Duration",
+    "tags": ["red", "baseline", "microservices"],
+    "timezone": "utc",
+    "refresh": "30s",
+    "time": { "from": "now-1h", "to": "now" },
+    "templating": {
+      "list": [
+        {
+          "name": "service",
+          "type": "query",
+          "datasource": "Prometheus",
+          "query": "label_values(http_requests_total, service)",
+          "refresh": 2,
+          "includeAll": true,
+          "current": { "text": "All", "value": "$__all" }
+        }
+      ]
+    },
+    "panels": [
+      {
+        "id": 1, "title": "Request Rate (req/s)", "type": "timeseries",
+        "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+        "datasource": "Prometheus",
+        "targets": [
+          { "expr": "sum(rate(http_requests_total{service=~\"$service\"}[5m])) by (service, method)", "legendFormat": "{{service}} {{method}}" }
+        ],
+        "fieldConfig": {
+          "defaults": { "unit": "reqps", "color": { "mode": "palette-classic" } }
+        }
+      },
+      {
+        "id": 2, "title": "Error Rate (%)", "type": "timeseries",
+        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+        "datasource": "Prometheus",
+        "targets": [
+          { "expr": "sum(rate(http_requests_total{service=~\"$service\",code=~\"5..\"}[5m])) by (service) / sum(rate(http_requests_total{service=~\"$service\"}[5m])) by (service) * 100", "legendFormat": "{{service}}" }
+        ],
+        "fieldConfig": {
+          "defaults": { "unit": "percent", "max": 100, "thresholds": { "steps": [{ "value": null, "color": "green" }, { "value": 1, "color": "yellow" }, { "value": 5, "color": "red" }] } }
+        }
+      },
+      {
+        "id": 3, "title": "Request Duration p50 / p95 / p99", "type": "timeseries",
+        "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+        "datasource": "Prometheus",
+        "targets": [
+          { "expr": "histogram_quantile(0.5, sum(rate(http_request_duration_seconds_bucket{service=~\"$service\"}[5m])) by (le, service))", "legendFormat": "{{service}} p50" },
+          { "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{service=~\"$service\"}[5m])) by (le, service))", "legendFormat": "{{service}} p95" },
+          { "expr": "histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{service=~\"$service\"}[5m])) by (le, service))", "legendFormat": "{{service}} p99" }
+        ],
+        "fieldConfig": { "defaults": { "unit": "s" } }
+      },
+      {
+        "id": 4, "title": "Error Budget Burn Rate", "type": "stat",
+        "gridPos": { "h": 4, "w": 6, "x": 12, "y": 8 },
+        "datasource": "Prometheus",
+        "targets": [
+          { "expr": "sum(rate(http_requests_total{service=~\"$service\",code=~\"5..\"}[1h])) / sum(rate(http_requests_total{service=~\"$service\"}[1h])) / 0.001", "legendFormat": "{{service}}" }
+        ],
+        "fieldConfig": { "defaults": { "thresholds": { "steps": [{ "value": null, "color": "green" }, { "value": 14.4, "color": "red" }] } } }
+      },
+      {
+        "id": 5, "title": "Top Errors by Service", "type": "barchart",
+        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+        "datasource": "Prometheus",
+        "targets": [
+          { "expr": "sum(rate(http_requests_total{service=~\"$service\",code=~\"5..\"}[5m])) by (service)", "legendFormat": "{{service}}" }
+        ],
+        "fieldConfig": { "defaults": { "unit": "reqps" } }
+      }
+    ]
+  },
+  "overwrite": true
+}

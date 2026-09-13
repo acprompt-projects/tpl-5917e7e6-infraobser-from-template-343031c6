@@ -1,0 +1,162 @@
+groups:
+  - name: critical-service-alerts
+    rules:
+      - alert: HighErrorRate
+        expr: |
+          sum(rate(http_requests_total{code=~"5.."}[5m])) by (service)
+          /
+          sum(rate(http_requests_total[5m])) by (service)
+          > 0.05
+        for: 2m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "High error rate on {{ $labels.service }}"
+          description: "Error rate is {{ $value | humanizePercentage }} (threshold 5%) for 2 minutes."
+          runbook: "https://wiki.internal/runbooks/high-error-rate"
+
+      - alert: ElevatedErrorRate
+        expr: |
+          sum(rate(http_requests_total{code=~"5.."}[5m])) by (service)
+          /
+          sum(rate(http_requests_total[5m])) by (service)
+          > 0.01
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Elevated error rate on {{ $labels.service }}"
+          description: "Error rate is {{ $value | humanizePercentage }} (threshold 1%) for 5 minutes."
+
+      - alert: HighLatencyP99
+        expr: |
+          histogram_quantile(0.99,
+            sum(rate(http_request_duration_seconds_bucket[5m])) by (le, service)
+          ) > 2.0
+        for: 5m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "High p99 latency on {{ $labels.service }}"
+          description: "p99 latency is {{ $value }}s (threshold 2s) for 5 minutes."
+          runbook: "https://wiki.internal/runbooks/high-latency"
+
+      - alert: HighLatencyP95
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(http_request_duration_seconds_bucket[5m])) by (le, service)
+          ) > 1.0
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Elevated p95 latency on {{ $labels.service }}"
+          description: "p95 latency is {{ $value }}s (threshold 1s) for 5 minutes."
+
+  - name: critical-infrastructure-alerts
+    rules:
+      - alert: HighCPUUtilization
+        expr: |
+          100 - (avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 90
+        for: 5m
+        labels:
+          severity: critical
+          team: infra
+        annotations:
+          summary: "High CPU utilization on {{ $labels.instance }}"
+          description: "CPU is at {{ $value }}% (threshold 90%) for 5 minutes."
+          runbook: "https://wiki.internal/runbooks/high-cpu"
+
+      - alert: HighMemoryUtilization
+        expr: |
+          (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 90
+        for: 5m
+        labels:
+          severity: critical
+          team: infra
+        annotations:
+          summary: "High memory utilization on {{ $labels.instance }}"
+          description: "Memory is at {{ $value }}% (threshold 90%) for 5 minutes."
+
+      - alert: DiskSpaceLow
+        expr: |
+          (node_filesystem_avail_bytes{fstype!="tmpfs"}
+          /
+          node_filesystem_size_bytes{fstype!="tmpfs"}) * 100 < 10
+        for: 5m
+        labels:
+          severity: critical
+          team: infra
+        annotations:
+          summary: "Low disk space on {{ $labels.instance }} {{ $labels.mountpoint }}"
+          description: "Only {{ $value }}% disk remaining (threshold 10%)."
+
+      - alert: DiskSpaceWarning
+        expr: |
+          (node_filesystem_avail_bytes{fstype!="tmpfs"}
+          /
+          node_filesystem_size_bytes{fstype!="tmpfs"}) * 100 < 20
+        for: 10m
+        labels:
+          severity: warning
+          team: infra
+        annotations:
+          summary: "Disk space warning on {{ $labels.instance }} {{ $labels.mountpoint }}"
+          description: "Only {{ $value }}% disk remaining (threshold 20%)."
+
+      - alert: HighDiskIOSaturation
+        expr: rate(node_disk_io_time_seconds_total[5m]) > 0.95
+        for: 5m
+        labels:
+          severity: critical
+          team: infra
+        annotations:
+          summary: "Disk I/O saturated on {{ $labels.instance }} {{ $labels.device }}"
+          description: "Disk I/O saturation is {{ $value }} (threshold 0.95)."
+
+      - alert: OOMKillDetected
+        expr: rate(node_vmstat_oom_kill[5m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+          team: infra
+        annotations:
+          summary: "OOM kill on {{ $labels.instance }}"
+          description: "OOM kills detected at rate {{ $value }}/s."
+          runbook: "https://wiki.internal/runbooks/oom-kill"
+
+  - name: error-budget-alerts
+    rules:
+      - alert: ErrorBudgetBurnRateFast
+        expr: |
+          (
+            sum(rate(http_requests_total{code=~"5.."}[1h]))
+            /
+            sum(rate(http_requests_total[1h]))
+          ) / 0.001 > 14.4
+        for: 2m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Error budget burning too fast"
+          description: "Burn rate {{ $value }}x (threshold 14.4x). 1h SLO may be breached."
+
+      - alert: ErrorBudgetBurnRateSlow
+        expr: |
+          (
+            sum(rate(http_requests_total{code=~"5.."}[6h]))
+            /
+            sum(rate(http_requests_total[6h]))
+          ) / 0.001 > 6
+        for: 30m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Error budget burning at concerning rate"
+          description: "Burn rate {{ $value }}x (threshold 6x). 30d SLO may be breached."
